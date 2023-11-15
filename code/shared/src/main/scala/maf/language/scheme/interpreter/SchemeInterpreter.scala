@@ -21,7 +21,7 @@ case class UnexpectedValueTypeException[V](v: V) extends Exception(s"The interpr
  * Scheme language analyzed by MAF.
  */
 class SchemeInterpreter(
-    cb: (Identity, ConcreteValues.Value) => Unit = (_, _) => (),
+    val cb: (Identity, ConcreteValues.Value) => Unit = (_, _) => (),
     val io: IO = new EmptyIO()
                        )
     extends BaseSchemeInterpreter[TailRec[ConcreteValues.Value]]

@@ -10,7 +10,7 @@ import scala.collection.immutable.Queue
 import scala.concurrent.TimeoutException
 
 class CPSSchemeInterpreter(
-    cb: (Identity, Value) => Unit = (_, _) => (), // TODO: incorporate
+    val cb: (Identity, Value) => Unit = (_, _) => (), // TODO: incorporate
     val io: IO = new EmptyIO(),
     val stack: Boolean = false)
     extends BaseSchemeInterpreter[Value]
