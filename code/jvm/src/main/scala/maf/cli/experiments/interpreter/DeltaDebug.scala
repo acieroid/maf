@@ -16,12 +16,18 @@ import java.util.concurrent.TimeoutException
  *   - We can instrument the interpreter (or the program directly) to print all/a subset of the evaluations, and compare that
  *   - They should agree on timing out (or not?)
  * TODO:
- * - use callback to interpreter
- * - change equality check for pointers
  * - check how many run to completion
  * - check how many disagree on timeout
+ * - instrumentation-based comparison: replace any function call by something that logs the args, calls the function, logs the result
  *
+ * (foo 1 2 3)
+ * becomes
+ * (log (foo (log 1) (log 2) (log 3)))
+ * apply it after parsing + preluding, dump it back to file
+ * but what does log do? In our interpreter, we can have a specific primitive
+ * We could also simply log the output and display within log
  *
+ * Bugs found:
  * Running on test/R5RS/icp/icp_6_stopandcopy_scheme.scm
 [error] UninitialisedVariableError(cons)
 [error] 	at maf.language.scheme.interpreter.ProgramError$.apply(BaseSchemeInterpreter.scala:10)
@@ -31,8 +37,20 @@ import java.util.concurrent.TimeoutException
 [error] 	at maf.language.scheme.interpreter.CPSSchemeInterpreter.eval(CPSSchemeInterpreter.scala:184)
  */
 
+trait InterpreterIndependentValue
+
 trait InterpreterComparison:
     def differenceOn(program: SchemeExp): Option[String]
+
+    /* Remove unique part of the address, to keep only its identity */
+    def strip(v: ConcreteValues.Value): ConcreteValues.Value =
+      import ConcreteValues.Value._
+      v match
+        case Clo(lambda, env) => Clo(lambda, env.map((name, addr) => (name, (-1, addr._2))))
+        case Pointer((_, identity)) => Pointer((-1, identity))
+        case Cons(car, cdr) => Cons(strip(car), strip(cdr))
+        case Vector(size, elems, init) => Vector(size, elems.map((idx, value) => (idx, strip(value))), strip(init))
+        case _ => v
 
 class ReturnValueInterpreterComparison extends InterpreterComparison:
     val interpreter1: BaseSchemeInterpreter[_] = new CPSSchemeInterpreter();
@@ -48,7 +66,7 @@ class ReturnValueInterpreterComparison extends InterpreterComparison:
     def differenceOn(program: SchemeExp): Option[String] =
       (runInterpreter(interpreter1, program), runInterpreter(interpreter2, program)) match
         case (None, None) => None /* both crash or time out */
-        case (Some(v1), Some(v2)) => if (v1 == v2) then None else Some(s"Different return value: $v1 != $v2")
+        case (Some(v1), Some(v2)) => if (strip(v1) == strip(v2)) then None else Some(s"Different return value: $v1 != $v2")
         case _ => Some(s"One crashes or times out, not the other")
 
 object CallbackInterpreterComparison extends ReturnValueInterpreterComparison:
@@ -61,7 +79,7 @@ object CallbackInterpreterComparison extends ReturnValueInterpreterComparison:
     def findDifference(m1: Map[Identity, Set[Value]], m2: Map[Identity, Set[Value]]): Option[String] =
         for (k1, v1) <- m1 do
           val v2: Option[Set[ConcreteValues.Value]] = m2.get(k1)
-          if v2.isDefined == false || v2.get != v1 then
+          if v2.isDefined == false || v2.get.map(strip) != v1.map(strip) then
             return Some(s"difference on key $k1, v1: $v1, v2: ${v2.map(_.toString).getOrElse("absent")}")
         None
 
