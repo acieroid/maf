@@ -8,7 +8,9 @@ import scala.concurrent.Future
 
 object ConcreteValues:
 
-    trait Value
+    trait Value:
+        def toDisplayedString(deref: Addr => Value): String = this.toString
+
 
     sealed trait AddrInfo:
         def idn: Identity
@@ -54,6 +56,7 @@ object ConcreteValues:
 
         case class Symbol(sym: String) extends Value:
             override def toString: String = s"'$sym"
+            override def toDisplayedString(deref: Addr => Value): String = sym
 
         case class Integer(n: BigInt) extends Value:
             override def toString: String = n.toString
@@ -66,18 +69,29 @@ object ConcreteValues:
 
         case class Pointer(v: Addr) extends Value:
             override def toString: String = s"#<ptr $v>"
+            override def toDisplayedString(deref: Addr => Value): String = deref(v).toDisplayedString(deref)
 
         case class Character(c: Char) extends Value:
             override def toString: String = c match
                 case ' '  => "#\\space"
                 case '\n' => "#\\newline"
                 case c    => s"#\\$c"
+            override def toDisplayedString(deref: Addr => Value): String = s"$c"
 
         case object Nil extends Value:
             override def toString: String = "'()"
+            override def toDisplayedString(deref: Addr => Value): String = "()"
 
         case class Cons(car: Value, cdr: Value) extends Value:
             override def toString: String = s"#<cons $car $cdr>"
+            override def toDisplayedString(deref: Addr => Value): String = s"(${displayAsList(deref)})"
+            def displayAsList(deref: Addr => Value): String = cdr match
+                case Nil => s"${car.toDisplayedString(deref)}"
+                case v: Cons => s"${car.toDisplayedString(deref)} ${v.displayAsList(deref)}"
+                case Pointer(addr) => deref(addr) match
+                    case v: Cons => s"${car.toDisplayedString(deref)} ${v.displayAsList(deref)}"
+                    case v => s"${car.toDisplayedString(deref)} . ${cdr.toDisplayedString(deref)}"
+                case _ => s"${car.toDisplayedString(deref)} . ${cdr.toDisplayedString(deref)}"
 
         case class Vector(
             size: BigInt,

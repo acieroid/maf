@@ -1,5 +1,7 @@
 package maf.cli.runnables
 
+import java.io.{BufferedReader, InputStreamReader}
+import java.util.concurrent.*
 import maf.language.scheme.interpreter.*
 import maf.language.scheme.primitives.*
 import maf.bench.scheme.*
@@ -11,13 +13,11 @@ import maf.language.scheme.*
 import maf.core.*
 import java.util.concurrent.TimeoutException
 
-/* Potential ideas:
- * - How to detect mismatches between two interpreters?
- *   - We can instrument the interpreter (or the program directly) to print all/a subset of the evaluations, and compare that
- *   - They should agree on timing out (or not?)
+/*
  * TODO:
  * - check how many run to completion
  * - check how many disagree on timeout
+ * - fix toStringification of our concrete interpretrer values
  * - instrumentation-based comparison: replace any function call by something that logs the args, calls the function, logs the result
  *
  * (foo 1 2 3)
@@ -37,8 +37,6 @@ import java.util.concurrent.TimeoutException
 [error] 	at maf.language.scheme.interpreter.CPSSchemeInterpreter.eval(CPSSchemeInterpreter.scala:184)
  */
 
-trait InterpreterIndependentValue
-
 trait InterpreterComparison:
     def differenceOn(program: SchemeExp): Option[String]
 
@@ -51,6 +49,51 @@ trait InterpreterComparison:
         case Cons(car, cdr) => Cons(strip(car), strip(cdr))
         case Vector(size, elems, init) => Vector(size, elems.map((idx, value) => (idx, strip(value))), strip(init))
         case _ => v
+
+class ExternalInterpreter(val executableName: String):
+
+    def run(program: SchemeExp, timeoutSeconds: Int): String =
+      // Write the file
+      val w = Writer.open("/tmp/foo.scm")
+      Writer.write(w, program.toString)
+      Writer.close(w)
+      // Run the executable on the file with a timeout
+      val p = Runtime.getRuntime().nn.exec(executableName + " /tmp/foo.scm").nn
+      val output = new BufferedReader(new InputStreamReader(p.getInputStream()))
+      if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) then
+        p.destroy()
+        throw new TimeoutException("Interpreter ran for too long")
+      else
+        val result = LazyList.continually(output.readLine()).takeWhile(_ != null).mkString("\n")
+        if p.exitValue != 0 then
+          val error = new BufferedReader(new InputStreamReader(p.getErrorStream()))
+          println(LazyList.continually(error.readLine()).takeWhile(_ != null).mkString("\n"))
+          // System.exit(1)
+          throw new Exception("external interpreter crashed")
+        else result
+
+object PrintBasedInterpreterComparison extends InterpreterComparison:
+    val io = new PrintIO()
+    val interpreter1 = new ExternalInterpreter("guile")
+    val interpreter2 = new SchemeInterpreter((_, _) => (), io)
+    val timeoutSeconds: Int = 10
+
+    def runInternalInterpreter(program: SchemeExp): Option[String] =
+      try
+        interpreter2.run(program, Timeout.start(Duration(timeoutSeconds, "seconds")))
+        Some(io.getAndClearOutput())
+      catch case exc: Throwable => println(exc) ; None
+
+    def runExternalInterpreter(program: SchemeExp): Option[String] =
+      try Some(interpreter1.run(program, timeoutSeconds))
+      catch case exc: Throwable => None
+
+    def differenceOn(program: SchemeExp): Option[String] =
+      (runInternalInterpreter(program), runExternalInterpreter(program)) match
+        case (None, None) => None /* both crash or time out */
+        case (Some(v1), Some(v2)) => if (v1 == v2) then None else Some(s"Different output: $v1 != $v2")
+        case (None, Some(_)) => Some(s"Internal crashes or times out")
+        case (Some(_), None) => Some(s"External crashes or times out")
 
 class ReturnValueInterpreterComparison extends InterpreterComparison:
     val interpreter1: BaseSchemeInterpreter[_] = new CPSSchemeInterpreter();
@@ -98,11 +141,12 @@ object CallbackInterpreterComparison extends ReturnValueInterpreterComparison:
 object DeltaDebug:
 
     //val comparison = new ReturnValueInterpreterComparison
-    val comparison = CallbackInterpreterComparison
+    // val comparison = CallbackInterpreterComparison
+    val comparison = PrintBasedInterpreterComparison
 
     def parseProgram(txt: String): SchemeExp =
         val parsed = SchemeParser.parse(txt)
-        val prelud = SchemePrelude.addPrelude(parsed, incl = Set("__toplevel_cons", "__toplevel_cdr", "__toplevel_set-cdr!"))
+        val prelud = SchemePrelude.addPrelude(parsed, incl = Set("__toplevel_cons", "__toplevel_cdr", "__toplevel_set-cdr!", "assert"))
         val transf = SchemeMutableVarBoxer.transform(prelud)
         SchemeParser.undefine(transf)
 

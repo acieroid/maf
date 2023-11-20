@@ -692,10 +692,10 @@ trait ConcreteSchemePrimitives:
         class DisplayLike(val name: String) extends SimplePrim:
             def call(args: List[Value], position: Position) = args match
                 case v :: Nil =>
-                    io.writeString(v.toString, io.console)
+                    io.writeString(v.toDisplayedString(lookupStore), io.console)
                     Value.Undefined(Identity.none)
                 case v :: Value.OutputPort(port) :: Nil =>
-                    io.writeString(v.toString, port)
+                    io.writeString(v.toDisplayedString(lookupStore), port)
                     Value.Undefined(Identity.none)
                 case _ => signalException(s"$name ($position): invalid arguments $args")
 

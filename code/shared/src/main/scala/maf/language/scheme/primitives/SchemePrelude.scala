@@ -15,6 +15,7 @@ class BaseSchemePrelude:
       "<=" -> "(define (<= x y) @sensitivity:FA (assert (number? x)) (or (< x y) (= x y) #f))",
       ">" -> "(define (> x y) @sensitivity:FA (assert (number? x)) (not (<= x y)))",
       ">=" -> "(define (>= x y) @sensitivity:FA (assert (number? x)) (or (> x y) (= x y) #f))",
+      "assert" -> "(define (assert x) #t)",
       "abs" -> "(define (abs x) @sensitivity:FA (assert (number? x)) (if (< x 0) (- 0 x) x))",
       "append" ->
           """(define (append . lsts)

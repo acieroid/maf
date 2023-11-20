@@ -133,3 +133,18 @@ class FileIO(val files: Map[String, String]) extends IO:
     def writeChar(c: Char, h: Handle): Unit = ()
 
     def writeString(s: String, h: Handle): Unit = ()
+
+
+class PrintIO extends EmptyIO:
+    var output: StringBuilder = new StringBuilder()
+
+    def getAndClearOutput(): String =
+        val out = output.toString
+        output.setLength(0)
+        out
+
+    override def writeChar(c: Char, h: Handle): Unit =
+        if (h == console) then output += c
+
+    override def writeString(s: String, h: Handle): Unit =
+        if (h == console) then output ++= s
