@@ -12,11 +12,13 @@ class PrintTest extends AnyFlatSpec:
     val programsAndOutputs: List[(String, String)] = List(
       ("(display 'hello)" -> "hello"),
       ("(display \"hello\")" -> "hello"),
+      ("(display \"\\\"\")" -> "\""),
+      ("(display \"\\n\")" -> "\n"),
       ("(display #\\h)" -> "h"),
       ("(display '())" -> "()"),
       ("(display (cons 'a 'b))" -> "(a . b)"),
       ("(display (cons 'a '()))" -> "(a)"),
-      ("(display (cons 'a (cons 'b '())))" -> "(a b)")
+      ("(display (cons 'a (cons 'b '())))" -> "(a b)"),
     )
 
     def test(program: String, expectedOutput: String): Unit =

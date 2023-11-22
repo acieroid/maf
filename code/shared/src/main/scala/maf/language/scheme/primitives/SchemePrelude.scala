@@ -235,7 +235,7 @@ class BaseSchemePrelude:
         |             (rst (cdr cur))]
         |         (loop rst (if (< elm acc) elm acc))))))""".stripMargin,
       "negative?" -> "(define (negative? x) @sensitivity:FA (assert (number? x)) (< x 0))",
-      "newline" -> "(define (newline) @sensitivity:FA #f)", // undefined
+      // "newline" -> "(define (newline) @sensitivity:FA #f)", // undefined
       "not" -> "(define (not x) @sensitivity:FA (if x #f #t))",
       "odd?" -> "(define (odd? x) @sensitivity:FA (assert (number? x)) (= 1 (modulo x 2)))",
       "positive?" -> "(define (positive? x) @sensitivity:FA (assert (number? x)) (> x 0))",
@@ -340,6 +340,7 @@ class BaseSchemePrelude:
       "__toplevel_set-car!" -> "(define __toplevel_set-car! set-car!)",
       "__toplevel_set-cdr!" -> "(define __toplevel_set-cdr! set-cdr!)",
       "__toplevel_append" -> "(define (__toplevel_append l1 l2) (append l1 l2))",
+      "__log" -> "(define (__log x) (display x) (newline) x)"
       /*
     "ref" -> "(define (ref x) (cons x (new-lock))",
     "deref" ->

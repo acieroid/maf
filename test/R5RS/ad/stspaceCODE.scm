@@ -143,7 +143,7 @@
                             (create-operator (lambda (s) (and (<= -100 s) (<= s 100))) (lambda (x) (- x 2)))
                             (create-operator (lambda (s) (and (<= -100 s) (<= s 100))) (lambda (x) (+ x 2))))
                     (lambda (g) (< g -99))
-                    (lambda (s) (<= -100 s 100))
+                    (lambda (s) (and (<= -100 s) (<= s 100)))
                     =
                     display
                     (lambda (x) (* x 2))

@@ -43,7 +43,7 @@ object ConcreteValues:
 
         /* arises from undefined behavior */
         case class Undefined(idn: Identity) extends Value:
-            override def toString: String = "#<undef>"
+            override def toString: String = "#<unspecified>"
 
         case class Clo(lambda: SchemeLambdaExp, env: Env) extends Value:
             override def toString: String = s"#<procedure:${lambda.lambdaName}>"
@@ -53,6 +53,8 @@ object ConcreteValues:
 
         case class Str(str: String) extends Value:
             override def toString: String = str
+            override def toDisplayedString(deref: Addr => Value): String =
+                str.replaceAll("\\\\n", "\n").nn.replaceAll("\\\\\"", "\"").nn
 
         case class Symbol(sym: String) extends Value:
             override def toString: String = s"'$sym"
