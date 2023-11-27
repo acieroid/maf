@@ -47,14 +47,22 @@ object ConcreteValues:
 
         case class Clo(lambda: SchemeLambdaExp, env: Env) extends Value:
             override def toString: String = s"#<procedure:${lambda.lambdaName}>"
+            override def toDisplayedString(deref: Addr => Value): String =
+                // Hacky, this is to make sure we can apply a regex safely for procs containing > in their name
+                s"#<procedure:${lambda.lambdaName} ()>"
 
         case class Primitive(p: String) extends Value:
             override def toString: String = s"#<primitive:$p>"
 
         case class Str(str: String) extends Value:
             override def toString: String = str
-            override def toDisplayedString(deref: Addr => Value): String =
-                str.replaceAll("\\\\n", "\n").nn.replaceAll("\\\\\"", "\"").nn
+            override def toDisplayedString(deref: Addr => Value): String=
+                str
+                    .replaceAll("([^\\\\])\\\\n", "$1\n").nn
+                    .replaceAll("^\\\\n", "\n").nn
+                    .replaceAll("\\\\t", "\t").nn
+                    .replaceAll("\\\\\"", "\"").nn
+                    .replaceAll("\\\\\\\\", "\\\\").nn
 
         case class Symbol(sym: String) extends Value:
             override def toString: String = s"'$sym"
@@ -101,6 +109,9 @@ object ConcreteValues:
             init: Value)
             extends Value:
             override def toString: String = s"#<vector[size:$size]>"
+            override def toDisplayedString(deref: Addr => Value): String =
+                val content = (BigInt(0) until size).map(i => elems.get(i).getOrElse(init).toDisplayedString(deref)).mkString(" ")
+                s"#($content)"
 
         case class InputPort(port: Handle) extends Value:
             override def toString: String = s"#<input-port:$port>"
@@ -122,6 +133,7 @@ object ConcreteValues:
 
         case object Void extends Value:
             override def toString: String = "#<void>"
+            override def toDisplayedString(deref: Addr => Value): String = s"#<unspecified>"
 
         /** An error as a value */
         case class Error(e: ProgramError) extends Value:

@@ -13,19 +13,11 @@ import maf.language.scheme.*
 import maf.core.*
 import java.util.concurrent.TimeoutException
 
-/*
- * TODO:
- * - check how many run to completion
- * - check how many disagree on timeout
- * - store/show output diffs
- * - printing vectors: #(elements)
- */
-
 class ExternalInterpreter(val executableName: String):
     def run(program: SchemeExp, timeoutSeconds: Int): String =
       // Write the file
       val w = Writer.open("/tmp/foo.scm")
-      Writer.write(w, program.toString)
+      Writer.write(w, "(define (char->string c) (list->string (list c)))\n" + program.toString)
       Writer.close(w)
       // Run the executable on the file with a timeout
       val p = Runtime.getRuntime().nn.exec(executableName + " /tmp/foo.scm").nn
@@ -73,17 +65,24 @@ trait InterpreterComparison:
 
     def differenceOn(name: String, program: SchemeExp): Option[Disagreement]
 
+    def isTimeout(exc: Throwable): Boolean = exc match
+        case _: TimeoutException => true
+        case _: StackOverflowError => true
+        case _ => false
+
     def compareResults[A](name: String, first: Either[Throwable, A], second: Either[Throwable, A], cmp: (A, A) => Option[Disagreement]): Option[Disagreement] =
        (first, second) match
-        case (Left(_: TimeoutException), Left(_: TimeoutException)) => None
+        case (Left(exc1), Left(exc2)) if isTimeout(exc1) && isTimeout(exc2) => None
         case (Right(v1), Right(v2)) => cmp(v1, v2)
-        case (Left(_: TimeoutException), _: Right[_, _]) => Some(TimeoutDisagreement(name, true))
-        case (_: Right[_, _], Left(_: TimeoutException)) => Some(TimeoutDisagreement(name, false))
-        case (Left(exc), _: Right[_, _]) => Some(CrashDisagreement(name, exc.toString()))
-        case (_: Right[_, _], Left(exc)) => Some(CrashDisagreement(name, exc.toString()))
-        case _ =>
+        case (Left(exc1), _: Right[_, _]) if isTimeout(exc1) => Some(TimeoutDisagreement(name, true))
+        case (_: Right[_, _], Left(exc2)) if isTimeout(exc2) => Some(TimeoutDisagreement(name, false))
+        case (Left(exc), _: Right[_, _]) => Some(CrashDisagreement(name, exc.toString() + "\n" + exc.getStackTrace().nn.mkString("\n")))
+        case (_: Right[_, _], Left(exc)) => Some(CrashDisagreement(name, exc.toString() + "\n" + exc.getStackTrace().nn.mkString("\n")))
+        case (Left(exc1), Left(exc2)) =>
           println("!!! Both crashed, this is likely an invalid benchmark")
-          Some(CrashDisagreement(name, "Both crashed!"))
+          val err1 = exc1.getStackTrace().nn.mkString("\n")
+          val err2 = exc2.getStackTrace().nn.mkString("\n")
+          Some(CrashDisagreement(name, s"Both crashed! $exc1 and $exc2 \n$err1\n$err2"))
 
     /* Remove unique part of the address, to keep only its identity */
     def strip(v: ConcreteValues.Value): ConcreteValues.Value =
@@ -93,13 +92,16 @@ trait InterpreterComparison:
         case Pointer((_, identity)) => Pointer((-1, identity))
         case Cons(car, cdr) => Cons(strip(car), strip(cdr))
         case Vector(size, elems, init) => Vector(size, elems.map((idx, value) => (idx, strip(value))), strip(init))
+        // We represent input and output port by their string representation, because they will never be equal
+        case InputPort(port) => Str(v.toString)
+        case OutputPort(port) => Str(v.toString)
         case _ => v
 
 class PrintBasedInterpreterComparison extends InterpreterComparison:
     val io = new PrintIO()
     val interpreter1 = new ExternalInterpreter("guile")
     val interpreter2 = new SchemeInterpreter((_, _) => (), io)
-    val timeoutSeconds: Int = 10
+    val timeoutSeconds: Int = 30
 
     def runInternalInterpreter(program: SchemeExp): Either[Throwable, String] =
       try
@@ -111,9 +113,24 @@ class PrintBasedInterpreterComparison extends InterpreterComparison:
       try Right(interpreter1.run(program, timeoutSeconds))
       catch case exc: Throwable => Left(exc)
 
+    def processOutput(v: String): String =
+      // We want to get rid of extra newlines (hence we trim)
+      // and to unify how procedures are represented.
+      // We can't deal with procedures in their .toDisplayedString method properly, so we just replace them wherever possible
+      // We print a procedure as e.g., #<procedure:dispatch> while guile prints them as #<procedure dispatch (msg args)>
+      v.trim().nn
+       .replaceAll("#<procedure \\w+ at .*\\)>", "#<procedure>").nn // from guile, e.g., #<procedure 5602d43a32e8 at <unknown port>:2:0 (x)>
+       .replaceAll("#<procedure ([^ ]+) .*\\)>", "#<procedure $1>").nn // from guile, e.g., #<procedure foo (x)>
+       .replaceAll("#<procedure:λ@[0-9:]+ \\(\\)>", "#<procedure>").nn // from MAF, e.g., #<procedure:λ@639:6 ()>
+       .replaceAll("#<procedure:([^)]+) \\(\\)>", "#<procedure $1>").nn // from MAF, e.g., #<procedure:dispatch ()>
+       .replaceAll("#<input-port:file:([^>]+)>", "#<input $1>").nn
+       .replaceAll("#<output-port:file:([^>]+)>", "#<output $1>").nn
+       .replaceAll("#<input: ([^>]+) [0-9]+>", "#<input $1>").nn
+       .replaceAll("#<output: ([^>]+) [0-9]+>", "#<output $1>").nn
+
     def differenceOn(name: String, program: SchemeExp): Option[Disagreement] =
       compareResults(name, runInternalInterpreter(program), runExternalInterpreter(program),
-                     (v1: String, v2: String) => if v1.trim() == v2.trim() then None else Some(OutputDisagreement(name, v1, v2)))
+                     (v1: String, v2: String) => if processOutput(v1) == processOutput(v2) then None else Some(OutputDisagreement(name, processOutput(v1), processOutput(v2))))
 
 class InstrumentationBasedInterpreterComparison extends PrintBasedInterpreterComparison:
     override def instrument(program: SchemeExp): SchemeExp = program match {
@@ -149,7 +166,7 @@ class InstrumentationBasedInterpreterComparison extends PrintBasedInterpreterCom
 class ReturnValueInterpreterComparison extends InterpreterComparison:
     val interpreter1: BaseSchemeInterpreter[_] = new CPSSchemeInterpreter();
     val interpreter2: BaseSchemeInterpreter[_] = new SchemeInterpreter();
-    val timeout: Duration = Duration(10, "seconds")
+    val timeout: Duration = Duration(30, "seconds")
 
     def runInterpreter(interpreter: BaseSchemeInterpreter[_], program: SchemeExp): Either[Throwable, Value] =
       try Right(interpreter.run(program, Timeout.start(timeout)))
@@ -186,7 +203,7 @@ class CallbackBasedInterpreterComparison extends ReturnValueInterpreterCompariso
 
 class DeltaDebug(comparison: InterpreterComparison):
 
-    val benchmarks = SchemeBenchmarkPrograms.sequentialBenchmarks.take(25)
+    val benchmarks = SchemeBenchmarkPrograms.sequentialBenchmarks
     var disagreements: List[Disagreement] = List()
 
     def parseProgram(txt: String): SchemeExp =
@@ -212,10 +229,10 @@ class DeltaDebug(comparison: InterpreterComparison):
       println(s"Output disagreements: ${outputDisagreements.length} (raw outputs in in /tmp/out)")
       outputDisagreements.foreach(_.dump("/tmp/out/"))
       val timeoutDisagreements = disagreements.filter(_.isInstanceOf[TimeoutDisagreement])
-      println("Timeout disagreements: ${timeoutDisagreements.length}")
+      println(s"Timeout disagreements: ${timeoutDisagreements.length}")
       timeoutDisagreements.foreach(_.dump("/tmp/out/"))
       val crashDisagreements = disagreements.filter(_.isInstanceOf[CrashDisagreement])
-      println("Crash disagreements:: ${crashDisagreements.length}")
+      println(s"Crash disagreements:: ${crashDisagreements.length}")
       crashDisagreements.foreach(_.dump("/tmp/out/"))
 
     def main(args: Array[String]): Unit =

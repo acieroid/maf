@@ -19,6 +19,8 @@ class PrintTest extends AnyFlatSpec:
       ("(display (cons 'a 'b))" -> "(a . b)"),
       ("(display (cons 'a '()))" -> "(a)"),
       ("(display (cons 'a (cons 'b '())))" -> "(a b)"),
+      ("(display (vector 1 2 3))" -> "#(1 2 3)"),
+      ("(let ((x 0)) (display (set! x 1)))" -> "#<unspecified>"),
     )
 
     def test(program: String, expectedOutput: String): Unit =
