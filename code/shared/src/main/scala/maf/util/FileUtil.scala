@@ -86,6 +86,11 @@ object Writer:
 
     def flush(writer: Writer): Unit = writer._1.flush()
 
+    def dump(path: String, data: String): Unit =
+        val w = Writer.open(path)
+        Writer.write(w, data)
+        Writer.close(w)
+
 object Formatter:
 
     //def toPercentString(value: Double, digits: Int = 2): String = f"${value*100}%.${digits}f%%"

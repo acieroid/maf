@@ -12,26 +12,40 @@ import maf.util.*
 import maf.language.scheme.*
 import maf.core.*
 import java.util.concurrent.TimeoutException
+import maf.deltaDebugging.treeDD.SchemeReduce
+import maf.deltaDebugging.treeDD.transformations.TransformationManager
+import maf.lattice.MathOps
+import scala.util.Random
+
+trait Instrumenter:
+    def instrument(program: SchemeExp): SchemeExp
+
+object NoInstrumentation extends Instrumenter:
+    def instrument(program: SchemeExp): SchemeExp = program
 
 class ExternalInterpreter(val executableName: String):
     def run(program: SchemeExp, timeoutSeconds: Int): String =
       // Write the file
-      val w = Writer.open("/tmp/foo.scm")
+      val suffix = Random.nextInt.toString
+      println(s"foo$suffix.scm")
+      val w = Writer.open(s"/tmp/foo$suffix.scm")
       Writer.write(w, "(define (char->string c) (list->string (list c)))\n" + program.toString)
       Writer.close(w)
       // Run the executable on the file with a timeout
-      val p = Runtime.getRuntime().nn.exec(executableName + " /tmp/foo.scm").nn
+      val p = Runtime.getRuntime().nn.exec(executableName + s" /tmp/foo$suffix.scm").nn
       val output = new BufferedReader(new InputStreamReader(p.getInputStream()))
       if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) then
         p.destroy()
         throw new TimeoutException("Interpreter ran for too long")
       else
-        val result = LazyList.continually(output.readLine()).takeWhile(_ != null).mkString("\n")
         if p.exitValue != 0 then
           val errorReader = new BufferedReader(new InputStreamReader(p.getErrorStream()))
           val error = LazyList.continually(errorReader.readLine()).takeWhile(_ != null).mkString("\n")
           throw new Exception(error)
-        else result
+        else
+          val result = LazyList.continually(output.readLine()).takeWhile(_ != null).mkString("\n")
+          // println(s"Result size: ${result.length}")
+          result
 
 
 trait Disagreement:
@@ -60,7 +74,7 @@ case class CrashDisagreement(val program: String, val error: String) extends Dis
       Writer.writeln(w, error)
       Writer.close(w)
 
-trait InterpreterComparison:
+trait InterpreterComparison extends Instrumenter:
     def instrument(program: SchemeExp): SchemeExp = program
 
     def differenceOn(name: String, program: SchemeExp): Option[Disagreement]
@@ -79,10 +93,14 @@ trait InterpreterComparison:
         case (Left(exc), _: Right[_, _]) => Some(CrashDisagreement(name, exc.toString() + "\n" + exc.getStackTrace().nn.mkString("\n")))
         case (_: Right[_, _], Left(exc)) => Some(CrashDisagreement(name, exc.toString() + "\n" + exc.getStackTrace().nn.mkString("\n")))
         case (Left(exc1), Left(exc2)) =>
-          println("!!! Both crashed, this is likely an invalid benchmark")
+          // println(s"!!! Both crashed, this is likely an invalid benchmark ($name)")
+          //exc1.printStackTrace()
+          //exc2.printStackTrace()
           val err1 = exc1.getStackTrace().nn.mkString("\n")
           val err2 = exc2.getStackTrace().nn.mkString("\n")
-          Some(CrashDisagreement(name, s"Both crashed! $exc1 and $exc2 \n$err1\n$err2"))
+          // Some(CrashDisagreement(name, s"Both crashed! $exc1 and $exc2 \n$err1\n$err2"))
+          // TODO: we don't want to keep this as disagreement during DD phase
+          None
 
     /* Remove unique part of the address, to keep only its identity */
     def strip(v: ConcreteValues.Value): ConcreteValues.Value =
@@ -106,8 +124,14 @@ class PrintBasedInterpreterComparison extends InterpreterComparison:
     def runInternalInterpreter(program: SchemeExp): Either[Throwable, String] =
       try
         interpreter2.run(program, Timeout.start(Duration(timeoutSeconds, "seconds")))
-        Right(io.getAndClearOutput())
-      catch case exc: Throwable => Left(exc)
+        val output = io.getAndClearOutput()
+        val suffix = Random.nextInt.toString
+        Writer.dump(s"/tmp/foo$suffix.scm", program.toString)
+        // println(s"Internal output (program in foo${suffix}.scm) length: ${output.length}")
+        Right(output)
+      catch case exc: Throwable =>
+        io.getAndClearOutput()
+        Left(exc)
 
     def runExternalInterpreter(program: SchemeExp): Either[Throwable, String] =
       try Right(interpreter1.run(program, timeoutSeconds))
@@ -119,10 +143,10 @@ class PrintBasedInterpreterComparison extends InterpreterComparison:
       // We can't deal with procedures in their .toDisplayedString method properly, so we just replace them wherever possible
       // We print a procedure as e.g., #<procedure:dispatch> while guile prints them as #<procedure dispatch (msg args)>
       v.trim().nn
-       .replaceAll("#<procedure \\w+ at .*\\)>", "#<procedure>").nn // from guile, e.g., #<procedure 5602d43a32e8 at <unknown port>:2:0 (x)>
-       .replaceAll("#<procedure ([^ ]+) .*\\)>", "#<procedure $1>").nn // from guile, e.g., #<procedure foo (x)>
+       .replaceAll("#<procedure \\w+ at .*>", "#<procedure>").nn // from guile, e.g., #<procedure 5602d43a32e8 at <unknown port>:2:0 (x)>
+       .replaceAll("#<procedure ([^ ]+) .*\\)>", "#<procedure>").nn // from guile, e.g., #<procedure foo (x)>
        .replaceAll("#<procedure:λ@[0-9:]+ \\(\\)>", "#<procedure>").nn // from MAF, e.g., #<procedure:λ@639:6 ()>
-       .replaceAll("#<procedure:([^)]+) \\(\\)>", "#<procedure $1>").nn // from MAF, e.g., #<procedure:dispatch ()>
+       .replaceAll("#<procedure:([^)]+) \\(\\)>", "#<procedure>").nn // from MAF, e.g., #<procedure:dispatch ()>
        .replaceAll("#<input-port:file:([^>]+)>", "#<input $1>").nn
        .replaceAll("#<output-port:file:([^>]+)>", "#<output $1>").nn
        .replaceAll("#<input: ([^>]+) [0-9]+>", "#<input $1>").nn
@@ -166,9 +190,10 @@ class InstrumentationBasedInterpreterComparison extends PrintBasedInterpreterCom
 class ReturnValueInterpreterComparison extends InterpreterComparison:
     val interpreter1: BaseSchemeInterpreter[_] = new CPSSchemeInterpreter();
     val interpreter2: BaseSchemeInterpreter[_] = new SchemeInterpreter();
-    val timeout: Duration = Duration(30, "seconds")
+    val timeout: Duration = Duration(300, "seconds")
 
     def runInterpreter(interpreter: BaseSchemeInterpreter[_], program: SchemeExp): Either[Throwable, Value] =
+      MathOps.randomGenerator = new Random(42)
       try Right(interpreter.run(program, Timeout.start(timeout)))
       catch case exc: Throwable => Left(exc)
 
@@ -201,24 +226,30 @@ class CallbackBasedInterpreterComparison extends ReturnValueInterpreterCompariso
                                       .orElse(findDifference(callback2._2(), callback1._2()))
                                       .map(diff => OutputDisagreement(name, s"${diff._1}: ${diff._2}", s"${diff._1}: ${diff._3}")))
 
-class DeltaDebug(comparison: InterpreterComparison):
-
-    val benchmarks = SchemeBenchmarkPrograms.sequentialBenchmarks
-    var disagreements: List[Disagreement] = List()
-
-    def parseProgram(txt: String): SchemeExp =
-      val parsed = SchemeParser.parse(txt)
-      val instrumented = parsed.map(comparison.instrument)
+object ProgramLoader:
+    def loadProgram(path: String, instrumenter: Instrumenter): SchemeExp =
+      val content = Reader.loadFile(path)
+      val parsed = SchemeParser.parse(content)
+      val instrumented = parsed.map(instrumenter.instrument)
       val preluded = SchemePrelude.addPrelude(instrumented, incl = Set("assert", "__log"))
       SchemeParser.undefine(preluded)
 
+/**
+ * This applies differential testing to two interpreters.
+ * Used to find programs which have different interpretation between the two interpreters
+ **/
+class DifferentialTesting(comparison: InterpreterComparison):
+
+    val benchmarks = Set("/tmp/foo.scm")
+    // val benchmarks = SchemeBenchmarkPrograms.sequentialBenchmarks -- Set("test/R5RS/various/infinite-1.scm", "test/R5RS/WeiChenRompf2019/omega.scm")
+    var disagreements: List[Disagreement] = List()
+
     def onBenchmark(name: String): Unit =
       println(s"Running on $name")
-      val content = Reader.loadFile(name)
-      val program = parseProgram(content)
+      val program = ProgramLoader.loadProgram(name, comparison)
       comparison.differenceOn(name, program) match {
         case Some(disagreement) =>
-          println(s"Disagreement on $name")
+          println(s"Disagreement on $name: $disagreement")
           disagreements = disagreement :: disagreements
         case _ => ()
       }
@@ -239,5 +270,93 @@ class DeltaDebug(comparison: InterpreterComparison):
       benchmarks.foreach(onBenchmark)
       report()
 
-object DeltaDebugExternal extends DeltaDebug(new InstrumentationBasedInterpreterComparison)
-object DeltaDebugInternal extends DeltaDebug(new CallbackBasedInterpreterComparison)
+object DifferentialTestingExternal extends DifferentialTesting(new InstrumentationBasedInterpreterComparison)
+object DifferentialTestingInternal extends DifferentialTesting(new CallbackBasedInterpreterComparison)
+
+// Black-box delta debugging
+abstract class DeltaDebug(comparison: InterpreterComparison):
+
+    val benchmarks: Set[String]
+
+    def deadCodeRemover(newCandidate: SchemeExp): Option[SchemeExp] =
+      None // TODO: is there anything we can do here?
+
+    def oracle(program: SchemeExp): Boolean =
+      val instrumented = comparison.instrument(program)
+      val preluded = SchemePrelude.addPrelude(List(instrumented), incl = Set("assert", "__log", "*seed*", "random"))
+      val programToRun = SchemeParser.undefine(preluded)
+      comparison.differenceOn("foo", programToRun) match
+        case Some(disagreement) =>
+          Writer.dump("/tmp/disagreement.scm", program.toString)
+          disagreement.dump("/tmp/out/")
+          println(s"Disagreement on: ${program.toString().take(100)}: ${disagreement.toString().take(150)}")
+          true
+        case None =>
+          // println(s"Agreement on: ${program.toString().take(20)}...")
+          false
+
+    def reduce(program: SchemeExp): SchemeExp =
+      SchemeReduce.reduce(program, oracle, identity, TransformationManager.allTransformations, Some(deadCodeRemover))
+
+    def onBenchmark(path: String): Unit =
+      val content = Reader.loadFile(path)
+      val parsed = SchemeParser.parse(content)
+      // val instrumented = parsed.map(instrumenter.instrument)
+      // val preluded = SchemePrelude.addPrelude(instrumented, incl = Set("assert", "__log"))
+      val program = SchemeParser.undefine(parsed)
+      val reduced = reduce(program)
+      println(s"========== ${path}")
+      println(reduced)
+      println("GTR total transformation count: " + TransformationManager.allTransformations.map(_.getHits).fold(0)(_ + _))
+
+    def main(args: Array[String]): Unit =
+      benchmarks.foreach(onBenchmark)
+
+object DeltaDebugInternal extends DeltaDebug(new CallbackBasedInterpreterComparison):
+    val benchmarks: Set[String] = Set() // No disagreement found!
+
+object DeltaDebugExternal extends DeltaDebug(new InstrumentationBasedInterpreterComparison):
+    val benchmarks: Set[String] = Set(
+      // These are all the ones that yield differences worth investigating
+      // Different order of evaluation of let bindings?
+      // "test/R5RS/gabriel/dderiv.scm", // (let ((arg ((lambda unique_args_382 #f) 5 '())) (result ((lambda unique_args_374 '()) 0 '()))) (equal? '() result))
+      // "test/R5RS/scp1/cashdesk-counter.scm", // (letrec ((teller ((lambda unique_args_295 #f))) (_0 ((lambda unique_args_287 '()) 'toets)) (_3 teller)) '())
+      // "test/R5RS/scp1/twitter.scm", // (letrec ((res1 ((lambda unique_args_463 #f) 'username)) (_0 ((lambda unique_args_455 '()) 'output)) (_6 res1)) '())
+      //
+      // Bug: (eq?) and (eq? x) are valid in guile, but not in MAF. It's guile that deviates from R5RS
+      // "test/R5RS/various/values.scm", // (letrec ((string->number eq?) (_1 (string->number))) '())
+      //
+      // Bug: letrec can reference later bindings in the same letrec, does not work in MAF
+      // It's actually guile that violates R5RS, as it states: "One restriction on letrec is very important: it must be possible to evaluate each <init> without assigning or referring to the value of any <variable>. If this restriction is violated, then it is an error. The restriction is necessary because Scheme passes arguments by value rather than by name. In the most common uses of letrec, all the <init>s are lambda expressions and the restriction is satisfied automatically. "
+      "test/R5RS/WeiChenRompf2019/rsa.scm", // (letrec ((is-legal-public-exponent? e) (e 7)) '())
+      //
+      // Same bug: guile allows circular bindings, e.g., (letrec ((_0 _0)) _0), where _0 will have an unspecified value.
+      // "test/R5RS/scp1/parking-counter.scm",
+      // "test/R5RS/scp1/tree-with-branches.scm",
+      // "test/R5RS/various/eta.scm",
+      // "test/R5RS/various/four-in-a-row.scm",
+      // "test/R5RS/various/grid.scm",
+
+      // The rest are due to either IO input (cat, wc, tail), or fractions (calc-e-and-cos, simpson-integral, third-root)
+      // Note that there are some high variations due to missing fractions in MAF! For example on simpson-integral
+      //"test/R5RS/scp1/simpson-integral.scm",
+      // "test/R5RS/scp1/third-root.scm",
+      //
+      // Other bug found in the process: (eq? x) should return #t, but fails in MAF
+    )
+
+
+object Interpreter:
+
+  def main(args: Array[String]): Unit =
+    val io = new PrintIO()
+    val interpreter = new SchemeInterpreter((_, _) => (), io)
+    val timeoutSeconds: Int = 30
+
+    val text = "(letrec ((<= (lambda (x y)  (let ((__or_res (< x y))) (if __or_res __or_res (let ((__or_res (= x y))) (if __or_res __or_res #f)))))) (not (lambda (x) (if x #f #t))) (abs (lambda (x)  (if (< x 0) (- 0 x) x))) (string=? (lambda (s1 s2)   (if (= (string-length s1) (string-length s2)) ((letrec ((loop (lambda (i) (if (< i 0) #t (if (char=? (string-ref s1 i) (string-ref s2 i)) (loop (- i 1)) #f))))) loop) (- (string-length s1) 1)) #f))) (> (lambda (x y)  (not (<= x y)))) (__log (lambda (x) (display x) (newline) x))  (equal? (lambda (a b) (let ((__or_res (eq? a b))) (if __or_res __or_res (let ((__or_res (if (null? a) (null? b) #f))) (if __or_res __or_res (let ((__or_res (if (string? a) (if (string? b) (string=? a b) #f) #f))) (if __or_res __or_res (let ((__or_res (if (pair? a) (if (pair? b) (if (equal? (car a) (car b)) (equal? (cdr a) (cdr b)) #f) #f) #f))) (if __or_res __or_res (if (vector? a) (if (vector? b) (let ((n (vector-length a))) (if (= (vector-length b) n) (letrec ((loop (lambda (i) (let ((__or_res (= i n))) (if __or_res __or_res (if (equal? (vector-ref a i) (vector-ref b i)) (loop (+ i 1)) #f)))))) (loop 0)) #f)) #f) #f))))))))))) (random (lambda (n) (let ((rand (lambda () (let* ((hi (quotient *seed* 127773)) (lo (modulo *seed* 127773)) (test (- (* 16807 lo) (* 2836 hi)))) (if (> test 0) (set! *seed* test) (set! *seed* (+ test 2147483647))) *seed*)))) (modulo (abs (rand)) n)))) (*seed* 1) (_0 (let ((arg (__log ((lambda unique_args_382 #f) 5 '()))) (result (__log ((lambda unique_args_374 '()) 0 '())))) (__log (equal? '() result))))) _0)"
+    // val text = "(let ((x (display 1)) (y (display 2))) (display 3))"
+    val program = SchemeParser.parse(text)(0)
+    interpreter.run(program, Timeout.start(Duration(timeoutSeconds, "seconds")))
+    val output = io.getAndClearOutput()
+    println(output)
+

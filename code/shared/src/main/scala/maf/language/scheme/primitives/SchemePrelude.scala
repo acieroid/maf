@@ -340,7 +340,18 @@ class BaseSchemePrelude:
       "__toplevel_set-car!" -> "(define __toplevel_set-car! set-car!)",
       "__toplevel_set-cdr!" -> "(define __toplevel_set-cdr! set-cdr!)",
       "__toplevel_append" -> "(define (__toplevel_append l1 l2) (append l1 l2))",
-      "__log" -> "(define (__log x) (display x) (newline) x)"
+      "__log" -> "(define (__log x) (display x) (newline) x)",
+      "*seed*" -> "(define *seed* 1)",
+      "random" -> """(define (random n)
+                     |  (let ((rand (lambda ()
+                     |                (let* ((hi (quotient *seed* 127773))
+                     |                       (lo (modulo *seed* 127773))
+                     |                       (test (- (* 16807 lo) (* 2836 hi))))
+                     |                  (if (> test 0)
+                     |                    (set! *seed* test)
+                     |                    (set! *seed* (+ test 2147483647)))
+                     |                    *seed*))))
+                     |    (modulo (abs (rand)) n)))""".stripMargin,
       /*
     "ref" -> "(define (ref x) (cons x (new-lock))",
     "deref" ->

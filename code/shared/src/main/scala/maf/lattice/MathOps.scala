@@ -4,6 +4,8 @@ import scala.util.Random
 
 /** Various implementations of mathematical utilities functions. */
 object MathOps:
+    var randomGenerator = new Random() // Mutable in case one needs to fix the seed for reproducibility
+
     def ceil(a: Double): Double = scala.math.ceil(a)
 
     /** Modulo in Scheme and Scala are different. This implements the same behavior as Scheme's modulo */
@@ -18,9 +20,9 @@ object MathOps:
     /** Remainder in Scheme has the same behavior of Scala's modulo. */
     def remainder(n1: BigInt, n2: BigInt): BigInt = n1 % n2
 
-    def random(n: BigInt): BigInt = (BigInt(n.bitLength, new Random()) % n).abs
+    def random(n: BigInt): BigInt = (BigInt(n.bitLength, MathOps.randomGenerator) % n).abs
 
-    def random(n: Double): Double = scala.math.abs(scala.util.Random.nextDouble() % n)
+    def random(n: Double): Double = scala.math.abs(MathOps.randomGenerator.nextDouble() % n)
 
     /** Round in Scheme and Scala are different. This implements the same behaviour as Scheme's round. */
     def round(n: Double): Double =
