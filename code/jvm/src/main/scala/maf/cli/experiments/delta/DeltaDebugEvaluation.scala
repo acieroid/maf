@@ -120,7 +120,7 @@ trait InterpreterComparison extends Instrumenter:
 class PrintBasedInterpreterComparison extends InterpreterComparison:
     val io = new PrintIO()
     val interpreter1 = new ExternalInterpreter("guile")
-    val interpreter2 = new SchemeInterpreter((_, _) => (), io)
+    val interpreter2 = new CountingSchemeInterpreter((_, _) => (), io)
     val timeoutSeconds: Int = 30
 
     def runInternalInterpreter(program: SchemeExp): Either[Throwable, String] =
@@ -154,6 +154,7 @@ class PrintBasedInterpreterComparison extends InterpreterComparison:
        .replaceAll("#<procedure ([^ ]+) .*\\)>", "#<procedure>").nn // from guile, e.g., #<procedure foo (x)>
        .replaceAll("#<procedure:λ@[0-9:]+ \\(\\)>", "#<procedure>").nn // from MAF, e.g., #<procedure:λ@639:6 ()>
        .replaceAll("#<procedure:([^)]+) \\(\\)>", "#<procedure>").nn // from MAF, e.g., #<procedure:dispatch ()>
+       .replaceAll("#<primitive:([^>]+)>", "#<procedure>").nn // from MAF, e.g., #<primitive:cons>
        .replaceAll("#<input-port:file:([^>]+)>", "#<input $1>").nn
        .replaceAll("#<output-port:file:([^>]+)>", "#<output $1>").nn
        .replaceAll("#<input: ([^>]+) [0-9]+>", "#<input $1>").nn
@@ -381,33 +382,34 @@ case class ReductionData(val benchmark: String,
 abstract class EvalStrategy:
   var oracleInvocations: Int = 0
 
-  def oracle(comparison: InterpreterComparison)(program: SchemeExp): Boolean = {
+  def oracle(comparison: PrintBasedInterpreterComparison)(program: SchemeExp): Boolean = {
     oracleInvocations += 1
     println(f"Invoking oracle ${oracleInvocations}")
-
-    // We don't want the delta debugger to consider the instrumented program,
-    // but only use instrumentation for comparison, hence we need to instrument now and not earlier.
-    // (We could instrument earlier, but we could then remove parts of the instrumentation and have odd results, possibly
-    val instrumented = comparison.instrument(program)
-    val preluded = SchemePrelude.addPrelude(List(instrumented), incl = Set("assert", "__log", "*seed*", "random"))
-    val programToRun = SchemeParser.undefine(preluded)
-    println("Computing difference")
-    val res = comparison.differenceOn("foo", programToRun) match
-      case Some(disagreement) =>
-        // Writer.dump("/tmp/disagreement.scm", program.toString)
-        // disagreement.dump("/tmp/out/")
-        // println(s"Disagreement on: ${program.toString().take(100)}: ${disagreement.toString().take(150)}")
-        println(s"Disagreement on program of size ${program.size} (${program.toString().take(100)}): ${disagreement.toString().take(100)}")
-        true
-      case None =>
-        false
-    println("Done computing differences")
-    res
+      // We don't want the delta debugger to consider the instrumented program,
+      // but only use instrumentation for comparison, hence we need to instrument now and not earlier.
+      // (We could instrument earlier, but we could then remove parts of the instrumentation and have odd results, possibly
+      val instrumented = comparison.instrument(program)
+      val preluded = SchemePrelude.addPrelude(List(instrumented), incl = Set("assert", "__log", "*seed*", "random"))
+      val programToRun = SchemeParser.undefine(preluded)
+      // If we introduced any undefined variables (e.g., by removing a def), this will not work so we skip this one
+      // TODO if !programToRun.findUndefinedVariables().isEmpty then return false
+      println("Computing difference")
+      val res = comparison.differenceOn("foo", programToRun) match
+        case Some(disagreement) =>
+          // Writer.dump("/tmp/disagreement.scm", program.toString)
+          // disagreement.dump("/tmp/out/")
+          // println(s"Disagreement on: ${program.toString().take(100)}: ${disagreement.toString().take(150)}")
+          println(s"Disagreement on program of size ${program.size} (${program.toString().take(100)}): ${disagreement.toString().take(100)}")
+          true
+        case None =>
+          false
+      println("Done computing differences")
+      res
   }
 
-  def reduce(comparison: InterpreterComparison, program: SchemeExp, name: String): SchemeExp
+  def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String): SchemeExp
 
-  def eval(comparison: InterpreterComparison, program: SchemeExp, name: String): ReductionData =
+  def eval(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String): ReductionData =
     // TODO: warmup + multiple iterations, add statistics to ReductionData (or use one of the helper classes for that)
     oracleInvocations = 0
 
@@ -428,7 +430,7 @@ abstract class EvalStrategy:
     )
 
 object GTREval extends EvalStrategy:
-  def reduce(comparison: InterpreterComparison, program: SchemeExp, name: String) =
+  def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String) =
     GTR.reduce(
       program,
       oracle(comparison),
@@ -436,7 +438,7 @@ object GTREval extends EvalStrategy:
     )
 
 object SchemeReduceEval extends EvalStrategy:
-  def reduce(comparison: InterpreterComparison, program: SchemeExp, name: String) =
+  def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String) =
     SchemeReduce.reduce(
       program,
       oracle(comparison),
@@ -444,32 +446,105 @@ object SchemeReduceEval extends EvalStrategy:
       Random.shuffle(TransformationManager.allTransformations)
     )
 
-object OrderedSchemeReduceEval extends EvalStrategy:
-  def reduce(comparison: InterpreterComparison, program: SchemeExp, name: String) =
+class OrderedSchemeReduceEval extends EvalStrategy:
+  def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String) =
     SchemeReduce.reduce(
       program,
       oracle(comparison),
       identity,
+      // TODO: order may not be relevant for our set of benchmarks anymore, may need to recompute it
       TransformationManager.allTransformations
     )
 
+object OrderedSchemeReduceEval extends OrderedSchemeReduceEval
+
 object LayeredSchemeReduceEval extends EvalStrategy:
-  def reduce(comparison: InterpreterComparison, program: SchemeExp, name: String) =
+  def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String) =
     LayeredSchemeReduce.reduce(
       program,
       oracle(comparison),
       identity,
-      TransformationManager.allTransformations,
+      Random.shuffle(TransformationManager.allTransformations),
       None,
       7
     )
 
+// Uses OrderedSchemeReduce + counting interpreter
+object CountingSchemeReduceEval extends EvalStrategy:
+    def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String) =
+      SchemeReduce.reduce(
+        program,
+        p => {
+          val oracleResult = oracle(comparison)(p)
+          // If the oracle found a difference, record the number of steps
+          // and keep this as an upper bound for the following runs
+          if oracleResult then
+            comparison.interpreter2.maxEvalSteps = comparison.interpreter2.getEvalSteps()
+          oracleResult
+        },
+        identity,
+        TransformationManager.allTransformations
+      )
+
+object RemoveExpensiveFunctionsEval extends OrderedSchemeReduceEval:
+    val timeoutSeconds = 30
+    def run(comparison: PrintBasedInterpreterComparison, program: SchemeExp): Unit =
+      val instrumented = comparison.instrument(program)
+      val preluded = SchemePrelude.addPrelude(List(instrumented), incl = Set("assert", "__log", "*seed*", "random"))
+      val programToRun = SchemeParser.undefine(preluded)
+      comparison.interpreter2.run(programToRun, Timeout.start(Duration(timeoutSeconds, "seconds")))
+
+    override def reduce(comparison: PrintBasedInterpreterComparison, program: SchemeExp, name: String) = {
+      // TODO: count time spent in preprocessing step
+      println("Removing lambdas...")
+      run(comparison, program)
+      val preprocessed = preprocess(comparison, program, comparison.interpreter2.stepsSpent)
+      println("-----> Done preprocessing")
+      super.reduce(comparison, preprocessed, name)
+    }
+
+    def preprocess(comparison: PrintBasedInterpreterComparison, program: SchemeExp, stepsSpent: Map[SchemeLambda, Int]): SchemeExp = {
+      // TODO: we don't want to remove lambdas that are part of the prelude...
+      val toRemove = stepsSpent.toList.sortBy(kv => - kv._2)
+      println(program)
+      println(s"To remove: ${toRemove.size}")
+      for (lambda <- toRemove) {
+        println(s"Removing ${lambda._1.name.get.toString().take(100)}")
+        val res = removeLambda(comparison, program, lambda._1)
+        if res.isDefined then
+          // One lambda could be removed, continue removing the other ones
+          return preprocess(comparison, res.get._1, res.get._2)
+      }
+      program // Nothing could be removed
+    }
+
+    def removeLambda(comparison: PrintBasedInterpreterComparison, program: SchemeExp, lambda: SchemeLambda): Option[(SchemeExp, Map[SchemeLambda, Int])] = {
+      try
+        // TODO: the source of the problem seems to be in deleteChildren here, the lambda is not found!
+        val programWithoutLambda = program.deleteChildren(exp =>
+                                                            println(exp)
+                                                            println(lambda)
+                                                            if exp eq lambda then println("FOUND")
+                                                            exp == lambda).get
+        val undefinedVariables: Set[String] = programWithoutLambda.findUndefinedVariables().map(_.name).toSet
+        if !((undefinedVariables -- SchemePrelude.primDefs.keySet).isEmpty) then
+          println(program)
+          println(s"Undefined variables: ${programWithoutLambda.findUndefinedVariables()}")
+          return None
+        println(programWithoutLambda)
+        run(comparison, programWithoutLambda)
+        println(s"Removed safely ${lambda.toString().take(100)}")
+        Some((programWithoutLambda, comparison.interpreter2.stepsSpent))
+      catch _ =>
+        println("Unable to remove it")
+        None // Execution failed, this one can't be removed
+    }
 
 object Evaluation:
   val benchmarks: Set[String] = Set(
     // These are all the ones that yield differences worth investigating
     // Different order of evaluation of let bindings?
-    // "test/R5RS/gabriel/dderiv.scm", // (let ((arg ((lambda unique_args_382 #f) 5 '())) (result ((lambda unique_args_374 '()) 0 '()))) (equal? '() result))
+    "test/R5RS/gabriel/dderiv.scm", // (let ((arg ((lambda unique_args_382 #f) 5 '())) (result ((lambda unique_args_374 '()) 0 '()))) (equal? '() result))
     // "test/R5RS/scp1/cashdesk-counter.scm", // (letrec ((teller ((lambda unique_args_295 #f))) (_0 ((lambda unique_args_287 '()) 'toets)) (_3 teller)) '())
     // "test/R5RS/scp1/twitter.scm", // (letrec ((res1 ((lambda unique_args_463 #f) 'username)) (_0 ((lambda unique_args_455 '()) 'output)) (_6 res1)) '())
     //
@@ -478,7 +553,7 @@ object Evaluation:
     //
     // Bug: letrec can reference later bindings in the same letrec, does not work in MAF
     // It's actually guile that violates R5RS, as it states: "One restriction on letrec is very important: it must be possible to evaluate each <init> without assigning or referring to the value of any <variable>. If this restriction is violated, then it is an error. The restriction is necessary because Scheme passes arguments by value rather than by name. In the most common uses of letrec, all the <init>s are lambda expressions and the restriction is satisfied automatically. "
-    "test/R5RS/WeiChenRompf2019/rsa.scm", // (letrec ((is-legal-public-exponent? e) (e 7)) '())
+    /// "test/R5RS/WeiChenRompf2019/rsa.scm", // (letrec ((is-legal-public-exponent? e) (e 7)) '())
     //
     // Same bug: guile allows circular bindings, e.g., (letrec ((_0 _0)) _0), where _0 will have an unspecified value.
     // "test/R5RS/scp1/parking-counter.scm",
@@ -500,7 +575,13 @@ object Evaluation:
     val content = Reader.loadFile(path)
     val parsed = SchemeParser.parse(content)
     val program = SchemeParser.undefine(parsed)
-    LayeredSchemeReduceEval.eval(comparison, program, path).dump()
+    // OrderedSchemeReduceEval.eval(comparison, program, path).dump()
+    // CountingSchemeReduceEval.eval(comparison, program, path).dump()
+    RemoveExpensiveFunctionsEval.eval(comparison, program, path).dump()
+
+    // TODO: useful from Turgut's code: check that there are no undefined variables in a program (but maybe before running it rather than after!)
+    // p.findUndefinedVariables().isEmpty
+    // TODO: extend countingDD to also count steps spent in each function (mimic call stack)
 
   def main(args: Array[String]): Unit =
     benchmarks.foreach(onBenchmark)

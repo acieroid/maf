@@ -5,6 +5,7 @@ import maf.language.change.CodeVersion.*
 import maf.language.scheme.*
 import maf.util.*
 import maf.util.benchmarks.Timeout
+import maf.language.scheme.primitives.SchemePrelude
 
 import java.util.concurrent.TimeUnit
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -25,6 +26,8 @@ class CountingSchemeInterpreter(cb: (Identity, ConcreteValues.Value) => Unit = (
 
   var maxEvalSteps: Long = Long.MaxValue //the maximum number of eval steps before a TimeoutException
   var buffer: Int = 1000 //buffer has to be sufficiently large
+  var currentLambda: Option[SchemeLambda] = None
+  var stepsSpent: Map[SchemeLambda, Int] = Map()
 
   def runWithMaxSteps(
                        program: SchemeExp,
@@ -34,8 +37,19 @@ class CountingSchemeInterpreter(cb: (Identity, ConcreteValues.Value) => Unit = (
                      ): Value =
     setStore(initialSto)
     maxEvalSteps = maxSteps
+    currentLambda = None
+    stepsSpent = Map[SchemeLambda, Int]().withDefaultValue(0)
     evalSteps = 0
     eval(program, initialEnv, timeout, version).result
+
+  def notInPrelude(lambda: SchemeLambda): Boolean =
+    lambda.name.isDefined && !SchemePrelude.primDefs.keySet.contains(lambda.name.get)
+
+  override def run(
+        program: SchemeExp,
+        timeout: Timeout.T,
+        version: Version = New
+      ): Value = runWithMaxSteps(program, timeout, maxEvalSteps, version)
 
   override def eval(
             e: SchemeExp,
@@ -43,17 +57,19 @@ class CountingSchemeInterpreter(cb: (Identity, ConcreteValues.Value) => Unit = (
             timeout: Timeout.T,
             version: Version,
           ): TailRec[Value] =
+    evalSteps += 1
+    if (evalSteps - buffer) > maxEvalSteps then
+      throw new TimeoutException()
+    if currentLambda.isDefined then stepsSpent += (currentLambda.get -> (stepsSpent(currentLambda.get) + 1))
     if timeout.reached then throw new TimeoutException()
     e match
       case lambda: SchemeLambdaExp => done(Value.Clo(lambda, env))
       case call@SchemeFuncall(f, args, idn) =>
-        evalSteps += 1
-        if (evalSteps - buffer) > maxEvalSteps then
-          throw new TimeoutException()
         for
           fv <- tailcall(eval(f, env, timeout, version))
           res <- fv match
             case Value.Clo(lambda@SchemeLambda(name, argsNames, body, ann, pos2), env2) =>
+              if notInPrelude(lambda) then currentLambda = Some(lambda)
               //calledLambdas = calledLambdas + lambda.hashCode()
               if argsNames.length != args.length then
                 signalException(
